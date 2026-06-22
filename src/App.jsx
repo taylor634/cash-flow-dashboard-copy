@@ -56,7 +56,7 @@ export default function CashFlowDashboard() {
                       'ownersDraw', 'taxPayments', 'customItems',
                       'actualEnding', 'lastSavedAt'];
         const results = await Promise.all(
-          keys.map(k => window.storage.get(`cashflow:${k}`).catch(() => null))
+          keys.map(k => window.storage.get(`cashflow-copy:${k}`).catch(() => null))
         );
         if (cancelled) return;
         const [qb, fn, pi, sc, od, tp, ci, ae, ts] = results;
@@ -85,20 +85,20 @@ export default function CashFlowDashboard() {
       try {
         await Promise.all([
           qbData
-            ? window.storage.set('cashflow:qbData', JSON.stringify(qbData))
-            : window.storage.delete('cashflow:qbData').catch(() => null),
+            ? window.storage.set('cashflow-copy:qbData', JSON.stringify(qbData))
+            : window.storage.delete('cashflow-copy:qbData').catch(() => null),
           fileName
-            ? window.storage.set('cashflow:fileName', fileName)
-            : window.storage.delete('cashflow:fileName').catch(() => null),
+            ? window.storage.set('cashflow-copy:fileName', fileName)
+            : window.storage.delete('cashflow-copy:fileName').catch(() => null),
           parseInfo
-            ? window.storage.set('cashflow:parseInfo', JSON.stringify(parseInfo))
-            : window.storage.delete('cashflow:parseInfo').catch(() => null),
-          window.storage.set('cashflow:startingCash', String(startingCash)),
-          window.storage.set('cashflow:ownersDraw', JSON.stringify(ownersDraw)),
-          window.storage.set('cashflow:taxPayments', JSON.stringify(taxPayments)),
-          window.storage.set('cashflow:customItems', JSON.stringify(customItems)),
-          window.storage.set('cashflow:actualEnding', JSON.stringify(actualEnding)),
-          window.storage.set('cashflow:lastSavedAt', now),
+            ? window.storage.set('cashflow-copy:parseInfo', JSON.stringify(parseInfo))
+            : window.storage.delete('cashflow-copy:parseInfo').catch(() => null),
+          window.storage.set('cashflow-copy:startingCash', String(startingCash)),
+          window.storage.set('cashflow-copy:ownersDraw', JSON.stringify(ownersDraw)),
+          window.storage.set('cashflow-copy:taxPayments', JSON.stringify(taxPayments)),
+          window.storage.set('cashflow-copy:customItems', JSON.stringify(customItems)),
+          window.storage.set('cashflow-copy:actualEnding', JSON.stringify(actualEnding)),
+          window.storage.set('cashflow-copy:lastSavedAt', now),
         ]);
         setLastSavedAt(now);
       } catch (err) {
@@ -114,7 +114,7 @@ export default function CashFlowDashboard() {
       const keys = ['qbData', 'fileName', 'parseInfo', 'startingCash',
                     'ownersDraw', 'taxPayments', 'customItems',
                     'actualEnding', 'lastSavedAt'];
-      await Promise.all(keys.map(k => window.storage.delete(`cashflow:${k}`).catch(() => null)));
+      await Promise.all(keys.map(k => window.storage.delete(`cashflow-copy:${k}`).catch(() => null)));
     } catch (err) {
       console.warn('Clear failed:', err);
     }
@@ -168,8 +168,8 @@ export default function CashFlowDashboard() {
   };
 
   const parseQBReport = (rows) => {
-    const inflows = { budget: Array(12).fill(0) };
-    const outflows = { budget: Array(12).fill(0) };
+    const inflows = { actual: Array(12).fill(0), budget: Array(12).fill(0) };
+    const outflows = { actual: Array(12).fill(0), budget: Array(12).fill(0) };
     const lineItems = [];
 
     let headerRow = -1;
@@ -199,6 +199,25 @@ export default function CashFlowDashboard() {
       };
     }
 
+    // Detect file year from month header cells
+    let fileYear = new Date().getFullYear();
+    const headerRowCells = rows[headerRow] || [];
+    for (const col of Object.values(monthCols)) {
+      const cellText = String(headerRowCells[col] || '');
+      const yearMatch = cellText.match(/\d{4}/);
+      if (yearMatch) { fileYear = parseInt(yearMatch[0]); break; }
+    }
+
+    // Detect Budget column offset from sub-header row (e.g. "Actual", "Budget", ...)
+    let budgetOffset = null;
+    const subHeaderRow = rows[headerRow + 1] || [];
+    const firstMonthCol = monthCols[Object.keys(monthCols).sort((a, b) => a - b)[0]];
+    for (let offset = 1; offset <= 5; offset++) {
+      const cell = String(subHeaderRow[firstMonthCol + offset] || '').trim().toLowerCase();
+      if (cell === 'budget') { budgetOffset = offset; break; }
+    }
+    const hasBudgetCol = budgetOffset !== null;
+
     let currentSection = null;
     const INCOME_SECTIONS = new Set(['income', 'other income']);
     const EXPENSE_SECTIONS = new Set(['expense', 'cost of goods sold', 'other expense']);
@@ -226,38 +245,72 @@ export default function CashFlowDashboard() {
         continue;
       }
       if (!currentSection) continue;
-      const monthly = Array(12).fill(0);
+
+      const monthlyActual = Array(12).fill(0);
+      const monthlyBudget = Array(12).fill(0);
       let hasAnyValue = false;
+
       for (let m = 0; m < 12; m++) {
-        const col = monthCols[m];
-        const raw = row[col];
-        const n = Number(raw);
-        if (!isNaN(n) && raw !== null && raw !== '' && raw !== undefined) {
-          monthly[m] = n;
-          if (n !== 0) hasAnyValue = true;
+        const actualCol = monthCols[m];
+        if (actualCol === undefined) continue;
+
+        const rawActual = row[actualCol];
+        const nActual = Number(rawActual);
+        if (!isNaN(nActual) && rawActual !== null && rawActual !== '' && rawActual !== undefined) {
+          monthlyActual[m] = nActual;
+          if (nActual !== 0) hasAnyValue = true;
+        }
+
+        if (hasBudgetCol) {
+          const budgetCol = actualCol + budgetOffset;
+          const rawBudget = row[budgetCol];
+          const nBudget = Number(rawBudget);
+          if (!isNaN(nBudget) && rawBudget !== null && rawBudget !== '' && rawBudget !== undefined) {
+            monthlyBudget[m] = nBudget;
+            if (nBudget !== 0) hasAnyValue = true;
+          }
+        } else {
+          // Single-column format: treat the value as budget
+          monthlyBudget[m] = monthlyActual[m];
         }
       }
+
       if (!hasAnyValue) continue;
       const target = currentSection === 'income' ? inflows : outflows;
-      for (let m = 0; m < 12; m++) target.budget[m] += monthly[m];
-      lineItems.push({ label, section: currentSection, budget: monthly });
+      for (let m = 0; m < 12; m++) {
+        target.actual[m] += monthlyActual[m];
+        target.budget[m] += monthlyBudget[m];
+      }
+      lineItems.push({ label, section: currentSection, actual: monthlyActual, budget: monthlyBudget });
     }
 
     const totalBudget = inflows.budget.reduce((s, v) => s + v, 0) + outflows.budget.reduce((s, v) => s + v, 0);
-    if (totalBudget === 0) {
+    const totalActual = inflows.actual.reduce((s, v) => s + v, 0) + outflows.actual.reduce((s, v) => s + v, 0);
+    if (totalBudget === 0 && totalActual === 0) {
       return { data: null, info: { error: "Found month columns but no line items with values." } };
     }
 
     return {
-      data: { inflows, outflows, lineItems },
+      data: { inflows, outflows, lineItems, fileYear, hasBudgetCol },
       info: {
         rowsFound: lineItems.length,
         incomeItems: lineItems.filter(i => i.section === 'income').length,
         expenseItems: lineItems.filter(i => i.section === 'expense').length,
-        totalIncome: inflows.budget.reduce((s, v) => s + v, 0),
-        totalExpense: outflows.budget.reduce((s, v) => s + v, 0),
+        totalIncomeBudget: inflows.budget.reduce((s, v) => s + v, 0),
+        totalExpenseBudget: outflows.budget.reduce((s, v) => s + v, 0),
+        fileYear,
+        hasBudgetCol,
       }
     };
+  };
+
+  // Determine which value to use per month: actual for past months, budget for current/future
+  const getBlendedValue = (actualArr, budgetArr, monthIdx, fileYear) => {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth(); // 0-indexed
+    const isPast = fileYear < currentYear || (fileYear === currentYear && monthIdx < currentMonth);
+    return isPast ? (actualArr[monthIdx] || 0) : (budgetArr[monthIdx] || 0);
   };
 
   const calculations = useMemo(() => {
@@ -266,8 +319,15 @@ export default function CashFlowDashboard() {
     let runningActual = startingCash;
 
     for (let m = 0; m < 12; m++) {
-      const qbIn = qbData?.inflows.budget[m] || 0;
-      const qbOut = qbData?.outflows.budget[m] || 0;
+      let qbIn, qbOut;
+      if (qbData) {
+        qbIn = getBlendedValue(qbData.inflows.actual, qbData.inflows.budget, m, qbData.fileYear);
+        qbOut = getBlendedValue(qbData.outflows.actual, qbData.outflows.budget, m, qbData.fileYear);
+      } else {
+        qbIn = 0;
+        qbOut = 0;
+      }
+
       const drawTotal = ownersDraw.health[m] + ownersDraw.guaranteed[m] + ownersDraw.other[m];
       let taxThisMonth = 0;
       if (taxPayments.q1Month === m) taxThisMonth += taxPayments.q1;
@@ -280,6 +340,14 @@ export default function CashFlowDashboard() {
         if (item.type === 'inflow') customIn += v;
         else customOut += v;
       });
+
+      // Determine if this month uses actual or budget from the file
+      const today = new Date();
+      const currentYear = today.getFullYear();
+      const currentMonth = today.getMonth();
+      const fileYear = qbData?.fileYear || currentYear;
+      const isActualMonth = fileYear < currentYear || (fileYear === currentYear && m < currentMonth);
+
       const totalIn = qbIn + customIn;
       const totalOut = qbOut + drawTotal + taxThisMonth + customOut;
       const startBudget = runningBudget;
@@ -295,6 +363,7 @@ export default function CashFlowDashboard() {
         draw: drawTotal, tax: taxThisMonth, customIn, customOut,
         endBudget, endActual, endActualProjected, variance,
         hasActual: endActual !== null,
+        isActualMonth,
       });
 
       runningBudget = endBudget;
@@ -341,6 +410,8 @@ export default function CashFlowDashboard() {
     setActualEnding(prev => prev.map((x, i) => i === monthIdx ? v : x));
   };
 
+  const fiscalYear = qbData?.fileYear || new Date().getFullYear();
+
   return (
     <div style={{
       minHeight: '100vh', background: '#F5F1EA',
@@ -374,6 +445,8 @@ export default function CashFlowDashboard() {
         .trough-warn { background: #FFF4E6; border-left: 3px solid #C97B1F; padding: 16px 20px; }
         details > summary { cursor: pointer; list-style: none; }
         details > summary::-webkit-details-marker { display: none; }
+        .badge-actual { background: #E8F0E8; color: #2D5A3D; font-size: 9px; letter-spacing: 0.08em; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; font-family: 'Source Sans 3', sans-serif; }
+        .badge-budget { background: #EEF2F8; color: #2C4A7C; font-size: 9px; letter-spacing: 0.08em; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; font-family: 'Source Sans 3', sans-serif; }
       `}</style>
 
       <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
@@ -382,7 +455,7 @@ export default function CashFlowDashboard() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '24px' }}>
             <div>
               <div style={{ fontSize: '10px', letterSpacing: '0.2em', textTransform: 'uppercase', color: '#6B6252', marginBottom: '8px' }}>
-                Fiscal Year 2026 · Cash Position Report
+                Fiscal Year {fiscalYear} · Cash Position Report
               </div>
               <h1 className="serif" style={{ fontSize: '52px', fontWeight: 400, margin: 0, lineHeight: 1 }}>
                 Cash Flow <em style={{ fontStyle: 'italic', fontWeight: 300 }}>Dashboard</em>
@@ -400,9 +473,9 @@ export default function CashFlowDashboard() {
             {!qbData ? (
               <div style={{ textAlign: 'center' }}>
                 <FileSpreadsheet size={40} strokeWidth={1} style={{ color: '#8B2A1C', marginBottom: '16px' }} />
-                <h2 className="serif" style={{ fontSize: '24px', fontWeight: 400, margin: '0 0 8px' }}>Upload QuickBooks Budget vs Actual</h2>
-                <p style={{ fontSize: '13px', color: '#6B6252', margin: '0 0 24px', maxWidth: '480px', marginLeft: 'auto', marginRight: 'auto' }}>
-                  Export your Budget vs Actual report from QuickBooks as .xlsx. The dashboard will parse income and expense line items automatically.
+                <h2 className="serif" style={{ fontSize: '24px', fontWeight: 400, margin: '0 0 8px' }}>Upload Budget vs Actual Report</h2>
+                <p style={{ fontSize: '13px', color: '#6B6252', margin: '0 0 24px', maxWidth: '520px', marginLeft: 'auto', marginRight: 'auto' }}>
+                  Upload your Budget vs Actual .xlsx file. Actuals will be used for months prior to today; Budget will be used for the current month and forward.
                 </p>
                 <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleFileUpload} style={{ display: 'none' }} />
                 <button className="primary" onClick={() => fileInputRef.current?.click()}>
@@ -421,7 +494,12 @@ export default function CashFlowDashboard() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ fontSize: '11px', letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6B6252', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span>File Loaded · Sheet: {parseInfo?.sheetUsed || '—'}</span>
+                      <span>File Loaded · Sheet: {parseInfo?.sheetUsed || '—'} · FY{parseInfo?.fileYear}</span>
+                      {parseInfo?.hasBudgetCol && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '2px 8px', background: '#EEF2F8', color: '#2C4A7C', borderRadius: '2px', fontSize: '10px', letterSpacing: '0.1em' }}>
+                          ACTUALS + BUDGET DETECTED
+                        </span>
+                      )}
                       {lastSavedAt && (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '2px 8px', background: '#E8F0E8', color: '#2D5A3D', borderRadius: '2px', fontSize: '10px', letterSpacing: '0.1em' }}>
                           <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2D5A3D' }} />
@@ -431,7 +509,7 @@ export default function CashFlowDashboard() {
                     </div>
                     <div className="serif" style={{ fontSize: '20px' }}>{fileName}</div>
                     <div style={{ fontSize: '12px', color: '#6B6252', marginTop: '6px' }}>
-                      Parsed <strong>{parseInfo?.incomeItems || 0}</strong> income items ({fmtCompact(parseInfo?.totalIncome || 0)}) and <strong>{parseInfo?.expenseItems || 0}</strong> expense items ({fmtCompact(parseInfo?.totalExpense || 0)})
+                      Parsed <strong>{parseInfo?.incomeItems || 0}</strong> income items ({fmtCompact(parseInfo?.totalIncomeBudget || 0)} budgeted) and <strong>{parseInfo?.expenseItems || 0}</strong> expense items ({fmtCompact(parseInfo?.totalExpenseBudget || 0)} budgeted)
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: '12px' }}>
@@ -488,15 +566,15 @@ export default function CashFlowDashboard() {
             <input type="number" value={startingCash} onChange={(e) => setStartingCash(Number(e.target.value) || 0)} className="edit" style={{ fontSize: '28px', fontFamily: 'Fraunces, serif', textAlign: 'left', fontWeight: 400 }} />
           </div>
           <div className="card">
-            <div className="kpi-label">YTD Budgeted Inflows</div>
+            <div className="kpi-label">YTD Inflows</div>
             <div className="kpi-num">{fmtCompact(calculations.ytdInflowsBudget)}</div>
           </div>
           <div className="card">
-            <div className="kpi-label">YTD Budgeted Outflows</div>
+            <div className="kpi-label">YTD Outflows</div>
             <div className="kpi-num">{fmtCompact(calculations.ytdOutflowsBudget)}</div>
           </div>
           <div className="card">
-            <div className="kpi-label">Net Change (Budget)</div>
+            <div className="kpi-label">Net Change</div>
             <div className="kpi-num" style={{ color: calculations.netBudget < 0 ? '#8B2A1C' : '#2D5A3D' }}>
               {calculations.netBudget < 0
                 ? <TrendingDown size={18} style={{ display: 'inline', marginRight: '6px', verticalAlign: '-1px' }} />
@@ -513,7 +591,7 @@ export default function CashFlowDashboard() {
               <div>
                 <strong className="serif" style={{ fontSize: '15px' }}>Cash Trough Alert</strong>
                 <div style={{ fontSize: '13px', color: '#6B4F1F', marginTop: '2px' }}>
-                  Budgeted ending balance bottoms out in {calculations.lowestMonth.month} at {fmt(calculations.lowestMonth.endBudget)}. Monitor closely.
+                  Ending balance bottoms out in {calculations.lowestMonth.month} at {fmt(calculations.lowestMonth.endBudget)}. Monitor closely.
                 </div>
               </div>
             </div>
@@ -526,8 +604,8 @@ export default function CashFlowDashboard() {
               Ending Cash Balance <em style={{ fontStyle: 'italic', fontWeight: 300, color: '#6B6252' }}>— by month</em>
             </h2>
             <div style={{ display: 'flex', gap: '16px', fontSize: '11px', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-              <span><span style={{ display: 'inline-block', width: '12px', height: '2px', background: '#1A1A1A', verticalAlign: 'middle', marginRight: '6px' }} />Budgeted</span>
-              <span><span style={{ display: 'inline-block', width: '12px', height: '2px', background: '#8B2A1C', verticalAlign: 'middle', marginRight: '6px' }} />Actual</span>
+              <span><span style={{ display: 'inline-block', width: '12px', height: '2px', background: '#1A1A1A', verticalAlign: 'middle', marginRight: '6px' }} />Projected</span>
+              <span><span style={{ display: 'inline-block', width: '12px', height: '2px', background: '#8B2A1C', verticalAlign: 'middle', marginRight: '6px' }} />Actual Entered</span>
             </div>
           </div>
           <ResponsiveContainer width="100%" height={280}>
@@ -537,8 +615,8 @@ export default function CashFlowDashboard() {
               <YAxis stroke="#6B6252" fontSize={11} tickLine={false} axisLine={{ stroke: '#B8AE98' }} tickFormatter={(v) => fmtCompact(v)} />
               <Tooltip contentStyle={{ background: '#FDFBF6', border: '1px solid #1A1A1A', borderRadius: '2px', fontSize: '12px' }} formatter={(v) => fmt(v)} />
               <ReferenceLine y={0} stroke="#8B2A1C" strokeDasharray="3 3" />
-              <Line type="monotone" dataKey="endBudget" stroke="#1A1A1A" strokeWidth={2} dot={{ fill: '#1A1A1A', r: 4 }} name="Budgeted" />
-              <Line type="monotone" dataKey="endActual" stroke="#8B2A1C" strokeWidth={2} dot={{ fill: '#8B2A1C', r: 4 }} name="Actual" connectNulls={false} />
+              <Line type="monotone" dataKey="endBudget" stroke="#1A1A1A" strokeWidth={2} dot={{ fill: '#1A1A1A', r: 4 }} name="Projected" />
+              <Line type="monotone" dataKey="endActual" stroke="#8B2A1C" strokeWidth={2} dot={{ fill: '#8B2A1C', r: 4 }} name="Actual Entered" connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
         </section>
@@ -550,6 +628,7 @@ export default function CashFlowDashboard() {
               <thead>
                 <tr>
                   <th style={{ fontFamily: 'Source Sans 3, sans-serif' }}>Month</th>
+                  <th style={{ fontFamily: 'Source Sans 3, sans-serif', fontSize: '10px' }}>Source</th>
                   <th>Start</th><th>Inflows</th><th>Outflows</th><th>Owner Draw</th><th>Tax</th><th>Cash End</th>
                 </tr>
               </thead>
@@ -557,6 +636,13 @@ export default function CashFlowDashboard() {
                 {calculations.monthlyData.map((row) => (
                   <tr key={row.month}>
                     <td style={{ fontFamily: 'Fraunces, serif', fontSize: '15px', fontWeight: 500 }}>{row.month}</td>
+                    <td>
+                      {qbData?.hasBudgetCol
+                        ? <span className={row.isActualMonth ? 'badge-actual' : 'badge-budget'}>
+                            {row.isActualMonth ? 'Actual' : 'Budget'}
+                          </span>
+                        : '—'}
+                    </td>
                     <td>{fmt(row.startBudget)}</td>
                     <td>{fmt(row.inflowsBudget)}</td>
                     <td>({fmt(row.outflowsBudget - row.draw - row.tax).replace('$','').replace('(','').replace(')','')})</td>
@@ -641,7 +727,7 @@ export default function CashFlowDashboard() {
           </div>
           {customItems.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '32px 16px', color: '#6B6252', fontSize: '13px', fontStyle: 'italic' }}>
-              No custom items yet. Add one-off inflows or outflows not captured in your QuickBooks budget.
+              No custom items yet. Add one-off inflows or outflows not captured in the budget file.
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
@@ -686,7 +772,7 @@ export default function CashFlowDashboard() {
 
         <footer style={{ paddingTop: '24px', borderTop: '1px solid #E8E0D0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6B6252' }}>
           <div style={{ flex: 1 }}></div>
-          <div>Cash Flow Dashboard · FY 2026 · Confidential</div>
+          <div>Cash Flow Dashboard · FY {fiscalYear} · Confidential</div>
           <div style={{ flex: 1, textAlign: 'right' }}>
             <button onClick={() => { if (confirm('Reset all saved data? This cannot be undone.')) clearSavedData(); }} style={{ background: 'none', border: 'none', color: '#6B6252', fontSize: '10px', letterSpacing: '0.15em', textTransform: 'uppercase', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'Source Sans 3, sans-serif' }}>
               Reset Saved Data
