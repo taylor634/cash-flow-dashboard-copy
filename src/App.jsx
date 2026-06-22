@@ -275,7 +275,6 @@ export default function CashFlowDashboard() {
         }
       }
 
-      if (!hasAnyValue) continue;
       const target = currentSection === 'income' ? inflows : outflows;
       for (let m = 0; m < 12; m++) {
         target.actual[m] += monthlyActual[m];
@@ -284,10 +283,8 @@ export default function CashFlowDashboard() {
       lineItems.push({ label, section: currentSection, actual: monthlyActual, budget: monthlyBudget });
     }
 
-    const totalBudget = inflows.budget.reduce((s, v) => s + v, 0) + outflows.budget.reduce((s, v) => s + v, 0);
-    const totalActual = inflows.actual.reduce((s, v) => s + v, 0) + outflows.actual.reduce((s, v) => s + v, 0);
-    if (totalBudget === 0 && totalActual === 0) {
-      return { data: null, info: { error: "Found month columns but no line items with values." } };
+    if (lineItems.length === 0) {
+      return { data: null, info: { error: "Found month columns but could not identify any income or expense line items." } };
     }
 
     return {
